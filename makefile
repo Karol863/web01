@@ -5,7 +5,7 @@ CFLAGS = $(WARNINGS) -march=native -O2 -flto -s -D_FORTIFY_SOURCE=1
 DFLAGS = -g
 
 build: $(SRC)
-	$(CC) $(SRC) $(CFLAGS)
+	$(CC) -o web01 $(SRC) $(CFLAGS)
 
 debug: $(SRC)
-	$(CC) $(SRC) $(DFLAGS)
+	$(CC) -o web01-debug $(SRC) $(DFLAGS)

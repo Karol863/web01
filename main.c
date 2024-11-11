@@ -1,175 +1,161 @@
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include "threads.h"
-#include "memory.h"
+#include "pool.h"
 
 #define PORT 6969
 #define HTTP_HEADER_OK "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
 #define HTTP_HEADER_POST "HTTP/1.1 201 Created\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
 #define HTTP_HEADER_ERROR "HTTP/1.1 404 Not Found\r\n\r\n"
 
-a buf;
+#define QuarterGB 268435456
 
-static void *process_request(void *arg) {
-	int *client_socket = (int *)arg;
-	printf("Processing: %d\n", *client_socket);
-	return NULL;
+static char buf_recv[1 << 29];
+static char buf_get [1 << 28];
+
+static char *path;
+static char *method;
+static char *saveptr;
+
+void get(int client_socket) {
+	char *filename = strtok_r(path, "/", &saveptr);
+	filename = strtok_r(NULL, " ", &saveptr);
+
+	FILE *f = fopen(filename, "r");
+	if (unlikely(f == NULL)) {
+		fputs("File not found!\n", stderr);
+		fclose(f);
+		return;
+	}
+
+	fseek(f, 0, SEEK_END);
+	usize file_len = ftell(f);
+	fseek(f, 0, SEEK_SET);
+
+	usize buf_get_len = (sizeof(HTTP_HEADER_OK) - 1) + file_len;
+	strcpy(buf_get, HTTP_HEADER_OK);
+
+	usize read_size = fread(buf_get + sizeof(HTTP_HEADER_OK), 1, buf_get_len, f);
+	if (read_size > sizeof(buf_get) - 1) {
+		fputs("The file is too big!\n", stderr);
+	}
+
+	fclose(f);
+
+	if (send(client_socket, buf_get, buf_get_len, 0) == -1) {
+		fputs("Failed to send a request!\n", stderr);
+	}
 }
 
-static void *received_buf(void *arg) {
-	int *buf_recv = (int *)arg;
-	printf("Processing: %d\n", *buf_recv);
-	return NULL;
+void post(int client_socket) {
+	method = strtok_r(NULL, "\r\n", &saveptr);
+	method = strtok_r(NULL, "\r\n", &saveptr);
+	method = strtok_r(NULL, "\r\n", &saveptr);
+	method = strtok_r(NULL, "\r\n", &saveptr);
+	method = strtok_r(NULL, "\r\n", &saveptr);
+	method = strtok_r(NULL, "\r\n", &saveptr);
+	method = strtok_r(NULL, "\r\n", &saveptr);
+
+	char *filename = strtok_r(path, "/", &saveptr);
+	filename = strtok_r(NULL, " ", &saveptr);
+
+	FILE *f = fopen(filename, "w");
+	if (unlikely(f == NULL)) {
+		fputs("File not found!\n", stderr);
+		fclose(f);
+		return;
+	}
+
+	usize write_size = fwrite(method, 1, strlen(method), f);
+	if (write_size > QuarterGB - 1) {
+		fputs("The file is too big!\n", stderr);
+	}
+
+	fclose(f);
+
+	if (send(client_socket, HTTP_HEADER_POST, strlen(HTTP_HEADER_POST), 0) == -1) {
+		fputs("Failed to send a request!\n", stderr);
+	}
 }
 
-static void *sent_request(void *arg) {
-	int *sent_bytes = (int *)arg;
-	printf("Processing: %d\n", *sent_bytes);
-	return NULL;
+void error(int client_socket) {
+	if (send(client_socket, HTTP_HEADER_ERROR, strlen(HTTP_HEADER_ERROR), 0) == -1) {
+		fputs("Failed to send a request!\n", stderr);
+	}
 }
 
 int main(void) {
-	threads *t = malloc(sizeof(threads));
+	Queue q = {0};
 
-	t = init_queue(t, 6);
-	init_array(&buf);
+	pthread_mutex_init(&q.mutex, NULL);
+	pthread_cond_init(&q.cond, NULL);
+
+	for (u8 i = 0; i < THREADS; ++i) {
+		pthread_create(&q.thread[i], NULL, worker, &q);
+	}
 
 	int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-	if (server_socket == -1) {
+	if (unlikely(server_socket == -1)) {
 		fputs("Failed to create a socket!\n", stderr);
-		free_array(&buf);
-		destroy(t);
 		return -1;
 	}
 
-	struct sockaddr_in server_addres;
-	server_addres.sin_family = AF_INET;
-	server_addres.sin_port = htons(PORT);
-	server_addres.sin_addr.s_addr = INADDR_ANY;
+	struct sockaddr_in server_adress;
+	server_adress.sin_family = AF_INET;
+	server_adress.sin_port = htons(PORT);
+	server_adress.sin_addr.s_addr = INADDR_ANY;
 
-	if (bind(server_socket, (const struct sockaddr *)&server_addres, sizeof(server_addres)) == -1) {
+	if (unlikely(bind(server_socket, (struct sockaddr *)&server_adress, sizeof(server_adress)) == -1)) {
 		fputs("Failed to bind the socket!\n", stderr);
-		free_array(&buf);
-		destroy(t);
 		return -1;
 	}
 
-	if (listen(server_socket, 5) < 0) {
-		fputs("Failed to listen to the socket!\n", stderr);
-		free_array(&buf);
-		destroy(t);
+	if (unlikely(listen(server_socket, 10) < 0)) {
+		fputs("Failed to listen to socket!\n", stderr);
 		return -1;
 	}
 
-	int *client_socket = malloc(sizeof(int));
-	int *buf_recv = malloc(sizeof(int));
-	int *sent_bytes = malloc(sizeof(int));
-
-	while (1) {
-		*client_socket = accept(server_socket, NULL, NULL);
-		if (*client_socket == -1) {
-			fputs("Failed to accept the request. Trying again...\n", stderr);
+	for (;;) {
+		int client_socket = accept(server_socket, NULL, NULL);
+		if (client_socket == -1) {
+			fputs("Failed to accept the request!\n", stderr);
 		}
 
-		task task_first = {process_request, client_socket};
-		enqueue(t, task_first);
-
-		if (buf.capacity == buf.size) {
-			resize_array(&buf);
+		int recv_func = recv(client_socket, buf_recv, sizeof(buf_recv) -1, 0);
+		if (recv_func == -1) {
+			fputs("Failed to receive a message from the socket!\n", stderr);
 		}
 
-		*buf_recv = recv(*client_socket, buf.data, buf.capacity, 0);
-		if (*buf_recv == -1) {
-			fputs("Failed to receive a buffer. Trying again...\n", stderr);
-		}
+		method = strtok_r(buf_recv, " ", &saveptr);
+		path = strtok_r(NULL, " ", &saveptr);
 
-		task task_second = {received_buf, buf_recv};
-		enqueue(t, task_second);
+		Task task;
+		task.client_socket = client_socket;
 
-		char *method = strtok(buf.data, " ");
-		char *path = strtok(NULL, " ");
-
-		if ((strcmp(method, "GET") == 0) && (strncmp(path, "/files/", 7)) == 0) {
-			char *filename = strtok(path, "/");
-			filename = strtok(NULL, " ");
-
-			FILE *fp = fopen(filename, "r");
-			if (fp == NULL) {
-				fputs("Failed to open a file!\n", stderr);
-			}
-
-			fseek(fp, 0, SEEK_END);
-			size_t file_len = ftell(fp);
-			fseek(fp, 0, SEEK_SET);
-
-			size_t message_len = (sizeof(HTTP_HEADER_OK) - 1) + file_len;
-			char *message = calloc(message_len, sizeof(char));
-			strcpy(message, HTTP_HEADER_OK);
-
-			size_t read_size = fread(message + sizeof(HTTP_HEADER_OK), 1, message_len, fp);
-			if (read_size != file_len) {
-				fputs("Failed to read data from a file!\n", stderr);
-			}
-			fclose(fp);
-
-			*sent_bytes = send(*client_socket, message, message_len, 0);
-			if (*sent_bytes == -1) {
-				fputs("Failed to send a request. Trying again...\n", stderr);
-			}
-			task task_third = {sent_request, sent_bytes};
-			enqueue(t, task_third);
-
-			free(message);
-		} else if ((strcmp(method, "POST") == 0) && (strncmp(path, "/files/", 7)) == 0) {
-			method = strtok(NULL, "\r\n");
-			method = strtok(NULL, "\r\n");
-			method = strtok(NULL, "\r\n");
-			method = strtok(NULL, "\r\n");
-			method = strtok(NULL, "\r\n");
-			method = strtok(NULL, "\r\n");
-			method = strtok(NULL, "\r\n");
-
-			char *filename = strtok(path, "/");
-			filename = strtok(NULL, " ");
-
-			FILE *fp = fopen(filename, "w");
-			if (fp == NULL) {
-				fputs("Failed to open a file!\n", stderr);
-			}
-
-			size_t write_size = fwrite(method, 1, strlen(method), fp);
-			if (write_size != strlen(method)) {
-				fputs("Failed to write data to a file!\n", stderr);
-			}
-			fclose(fp);
-
-			*sent_bytes = send(*client_socket, HTTP_HEADER_POST, (strlen(HTTP_HEADER_POST)), 0);
-			if (*sent_bytes == -1) {
-				fputs("Failed to send a request. Trying again...\n", stderr);
-			}
-
-			task task_fourth = {sent_request, sent_bytes};
-			enqueue(t, task_fourth);
+		if ((strcmp(method, "GET") == 0) && (strncmp(path, "/files/", 7) == 0)) {
+			task.func = get;
+			enqueue(&q, task);
+		} else if ((strcmp(method, "POST") == 0) && (strncmp(path, "/files/", 7) == 0)) {
+			task.func = post;
+			enqueue(&q, task);
 		} else {
-			*sent_bytes = send(*client_socket, HTTP_HEADER_ERROR, (strlen(HTTP_HEADER_ERROR)), 0);
-			if (*sent_bytes == -1) {
-				fputs("Failed to send a request. Trying again...\n", stderr);
-			}
-
-			task task_fiveth = {sent_request, sent_bytes};
-			enqueue(t, task_fiveth);
+			task.func = error;
+			task.client_socket = client_socket;
+			enqueue(&q, task);
 		}
-		close(*client_socket);
 	}
+
+	for (u8 i = 0; i < THREADS; ++i) {
+		pthread_join(q.thread[i], NULL);
+	}
+
+	pthread_mutex_destroy(&q.mutex);
+	pthread_cond_destroy(&q.cond);
+
 	close(server_socket);
-	free_array(&buf);
-	destroy(t);
-	free(client_socket);
-	free(buf_recv);
-	free(sent_bytes);
 	return 0;
 }
