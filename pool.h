@@ -15,11 +15,11 @@ typedef struct {
 
 typedef struct {
 	Task data[QUEUE];
+	pthread_cond_t cond;
+	pthread_mutex_t mutex;
+	pthread_t thread[THREADS];
 	u8 tail;
 	u8 head;
-	pthread_t thread[THREADS];
-	pthread_mutex_t mutex;
-	pthread_cond_t cond;
 } Queue;
 
 void enqueue(Queue *q, Task t);

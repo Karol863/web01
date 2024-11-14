@@ -26,7 +26,7 @@ void get(int client_socket) {
 	filename = strtok_r(NULL, " ", &saveptr);
 
 	FILE *f = fopen(filename, "r");
-	if (unlikely(f == NULL)) {
+	if (f == NULL) {
 		fputs("File not found!\n", stderr);
 		fclose(f);
 		return;
@@ -64,7 +64,7 @@ void post(int client_socket) {
 	filename = strtok_r(NULL, " ", &saveptr);
 
 	FILE *f = fopen(filename, "w");
-	if (unlikely(f == NULL)) {
+	if (f == NULL) {
 		fputs("File not found!\n", stderr);
 		fclose(f);
 		return;

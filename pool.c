@@ -6,8 +6,9 @@
 void enqueue(Queue *q, Task t) {
 	pthread_mutex_lock(&q->mutex);
 
-	if (unlikely((q->tail + 1) % QUEUE == q->head)) {
+	if ((q->tail + 1) % QUEUE == q->head) {
 		fputs("Queue is full!\n", stderr);
+		pthread_mutex_unlock(&q->mutex);
 		return;
 	}
 
