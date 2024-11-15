@@ -12,10 +12,10 @@
 #define HTTP_HEADER_POST "HTTP/1.1 201 Created\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
 #define HTTP_HEADER_ERROR "HTTP/1.1 404 Not Found\r\n\r\n"
 
-#define QuarterGB 268435456
+#define CAPACITY 268435456
 
-static char buf_recv[1 << 29];
-static char buf_get [1 << 28];
+static char *buf_recv;
+static char *buf_get;
 
 static char *path;
 static char *method;
@@ -28,10 +28,8 @@ void get(int client_socket) {
 	FILE *f = fopen(filename, "r");
 	if (f == NULL) {
 		fputs("File not found!\n", stderr);
-		fclose(f);
 		return;
 	}
-
 	fseek(f, 0, SEEK_END);
 	usize file_len = ftell(f);
 	fseek(f, 0, SEEK_SET);
@@ -40,10 +38,9 @@ void get(int client_socket) {
 	strcpy(buf_get, HTTP_HEADER_OK);
 
 	usize read_size = fread(buf_get + sizeof(HTTP_HEADER_OK), 1, buf_get_len, f);
-	if (read_size > sizeof(buf_get) - 1) {
+	if (read_size > CAPACITY - 1) {
 		fputs("The file is too big!\n", stderr);
 	}
-
 	fclose(f);
 
 	if (send(client_socket, buf_get, buf_get_len, 0) == -1) {
@@ -66,15 +63,12 @@ void post(int client_socket) {
 	FILE *f = fopen(filename, "w");
 	if (f == NULL) {
 		fputs("File not found!\n", stderr);
-		fclose(f);
 		return;
 	}
-
 	usize write_size = fwrite(method, 1, strlen(method), f);
-	if (write_size > QuarterGB - 1) {
+	if (write_size > CAPACITY - 1) {
 		fputs("The file is too big!\n", stderr);
 	}
-
 	fclose(f);
 
 	if (send(client_socket, HTTP_HEADER_POST, strlen(HTTP_HEADER_POST), 0) == -1) {
@@ -90,13 +84,8 @@ void error(int client_socket) {
 
 int main(void) {
 	Queue q = {0};
-
-	pthread_mutex_init(&q.mutex, NULL);
-	pthread_cond_init(&q.cond, NULL);
-
-	for (u8 i = 0; i < THREADS; ++i) {
-		pthread_create(&q.thread[i], NULL, worker, &q);
-	}
+	Arena a_get = {0};
+	Arena a_recv = {0};
 
 	int server_socket = socket(AF_INET, SOCK_STREAM, 0);
 	if (unlikely(server_socket == -1)) {
@@ -111,12 +100,35 @@ int main(void) {
 
 	if (unlikely(bind(server_socket, (struct sockaddr *)&server_adress, sizeof(server_adress)) == -1)) {
 		fputs("Failed to bind the socket!\n", stderr);
+		close(server_socket);
 		return -1;
 	}
 
 	if (unlikely(listen(server_socket, 10) < 0)) {
 		fputs("Failed to listen to socket!\n", stderr);
+		close(server_socket);
 		return -1;
+	}
+
+	arena_init(&a_get, &q);
+	arena_init(&a_recv, &q);
+
+	pthread_mutex_init(&q.mutex, NULL);
+	pthread_cond_init(&q.cond, NULL);
+
+	buf_get = arena_alloc(&a_get, &q, CAPACITY);
+	buf_recv = arena_alloc(&a_recv, &q, CAPACITY);
+
+	if (a_get.offset > CAPACITY - 1) {
+		arena_alloc(&a_get, &q, CAPACITY * 2);
+	}
+
+	if (a_recv.offset > CAPACITY - 1) {
+		arena_alloc(&a_recv, &q, CAPACITY * 2);
+	}
+
+	for (u8 i = 0; i < THREADS; ++i) {
+		pthread_create(&q.thread[i], NULL, worker, &q);
 	}
 
 	for (;;) {
@@ -125,7 +137,7 @@ int main(void) {
 			fputs("Failed to accept the request!\n", stderr);
 		}
 
-		int recv_func = recv(client_socket, buf_recv, sizeof(buf_recv) -1, 0);
+		int recv_func = recv(client_socket, buf_recv, CAPACITY - 1, 0);
 		if (recv_func == -1) {
 			fputs("Failed to receive a message from the socket!\n", stderr);
 		}
@@ -152,6 +164,9 @@ int main(void) {
 	for (u8 i = 0; i < THREADS; ++i) {
 		pthread_join(q.thread[i], NULL);
 	}
+
+	arena_free(&a_get, &q);
+	arena_free(&a_recv, &q);
 
 	pthread_mutex_destroy(&q.mutex);
 	pthread_cond_destroy(&q.cond);

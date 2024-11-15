@@ -1,8 +1,7 @@
 CC = gcc
 SRC = $(wildcard *.c) $(wildcard *.h)
-WARNINGS = -Wall -Wextra 
-CFLAGS = $(WARNINGS) -march=native -O2 -flto -s -D_FORTIFY_SOURCE=1
-DFLAGS = -g
+CFLAGS = -march=native -O2 -flto -s -D_FORTIFY_SOURCE=1
+DFLAGS = -Wall -Wextra -Wpedantic -Wshadow -g3 -O0 -fsanitize=address,undefined
 
 build: $(SRC)
 	$(CC) -o web01 $(SRC) $(CFLAGS)
