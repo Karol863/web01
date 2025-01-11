@@ -1,176 +1,169 @@
-#include <stdio.h>
 #include <string.h>
-#include <unistd.h>
+
+#include "pool.c"
+#include "arena.c"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
-
-#include "pool.h"
 
 #define PORT 6969
 #define HTTP_HEADER_OK "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
 #define HTTP_HEADER_POST "HTTP/1.1 201 Created\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
 #define HTTP_HEADER_ERROR "HTTP/1.1 404 Not Found\r\n\r\n"
 
-#define CAPACITY 268435456
+static Queue queue;
+static Arena arena;
 
+static char *buf_filename;
 static char *buf_recv;
 static char *buf_get;
 
-static char *path;
-static char *method;
-static char *saveptr;
+char *get_filename(void) {
+	char *start = strchr(buf_recv, '/');
+	start = strchr(start + 1, '/');
+	char *end = strchr(start, ' ');
+	assert(start != NULL && end != NULL);
 
+	u16 length = end - start;
+	memcpy(buf_filename, start + 1, length - 1);
+	buf_filename[length - 1] = '\0';
+
+	assert(buf_filename != NULL);
+	return buf_filename;
+}
+
+char *get_message(void) {
+	const char *str = "Content-Type: application/x-www-form-urlencoded";
+
+	char *message = strstr(buf_recv, str);
+	message += strlen(str) + 2;
+
+	assert(message != NULL);
+	return message;
+} 
 void get(int client_socket) {
-	char *filename = strtok_r(path, "/", &saveptr);
-	filename = strtok_r(NULL, " ", &saveptr);
+	char *filename = get_filename();
 
 	FILE *f = fopen(filename, "r");
 	if (f == NULL) {
-		fputs("File not found!\n", stderr);
-		return;
+		fputs("Error: failed to open a file.\n", stderr);
+		exit(1);
 	}
+
 	fseek(f, 0, SEEK_END);
-	usize file_len = ftell(f);
+	u64 file_len = ftell(f);
 	fseek(f, 0, SEEK_SET);
 
-	usize buf_get_len = (sizeof(HTTP_HEADER_OK) - 1) + file_len;
-	strcpy(buf_get, HTTP_HEADER_OK);
+	u64 buf_get_len = (sizeof(HTTP_HEADER_OK) - 1) + file_len;
+	assert(buf_get_len > 0);
+	buf_get = arena_alloc(&arena, &queue, buf_get_len);
 
-	usize read_size = fread(buf_get + sizeof(HTTP_HEADER_OK), 1, buf_get_len, f);
-	if (read_size > CAPACITY - 1) {
-		fputs("The file is too big!\n", stderr);
+	memcpy(buf_get, HTTP_HEADER_OK, sizeof(HTTP_HEADER_OK));
+
+	u64 read_size = fread(buf_get + sizeof(HTTP_HEADER_OK), 1, buf_get_len, f);
+	if (ferror(f) || read_size < 0) {
+		fprintf(stderr, "Error: failed to read from the %s file.\n", buf_filename);
+		exit(1);
 	}
 	fclose(f);
 
 	if (send(client_socket, buf_get, buf_get_len, 0) == -1) {
-		fputs("Failed to send a request!\n", stderr);
+		fputs("Error: failed to send a request.\n", stderr);
+		exit(1);
 	}
 }
 
 void post(int client_socket) {
-	method = strtok_r(NULL, "\r\n", &saveptr);
-	method = strtok_r(NULL, "\r\n", &saveptr);
-	method = strtok_r(NULL, "\r\n", &saveptr);
-	method = strtok_r(NULL, "\r\n", &saveptr);
-	method = strtok_r(NULL, "\r\n", &saveptr);
-	method = strtok_r(NULL, "\r\n", &saveptr);
-	method = strtok_r(NULL, "\r\n", &saveptr);
-
-	char *filename = strtok_r(path, "/", &saveptr);
-	filename = strtok_r(NULL, " ", &saveptr);
+	char *message = get_message();
+	char *filename = get_filename();
 
 	FILE *f = fopen(filename, "w");
 	if (f == NULL) {
-		fputs("File not found!\n", stderr);
-		return;
+		fputs("Error: failed to open a file.\n", stderr);
+		exit(1);
 	}
-	usize write_size = fwrite(method, 1, strlen(method), f);
-	if (write_size > CAPACITY - 1) {
-		fputs("The file is too big!\n", stderr);
+
+	u64 write_size = fwrite(message, 1, strlen(message), f);
+	if (ferror(f) || write_size < 0) {
+		fprintf(stderr, "Error: failed to write data into the %s file.\n", filename);
+		exit(1);
 	}
 	fclose(f);
 
-	if (send(client_socket, HTTP_HEADER_POST, strlen(HTTP_HEADER_POST), 0) == -1) {
-		fputs("Failed to send a request!\n", stderr);
+	if (send(client_socket, HTTP_HEADER_POST, (sizeof(HTTP_HEADER_POST) - 1), 0) == -1) {
+		fputs("Error: failed to send a request.\n", stderr);
+		exit(1);
 	}
 }
 
 void error(int client_socket) {
-	if (send(client_socket, HTTP_HEADER_ERROR, strlen(HTTP_HEADER_ERROR), 0) == -1) {
-		fputs("Failed to send a request!\n", stderr);
+	if (send(client_socket, HTTP_HEADER_ERROR, (sizeof(HTTP_HEADER_ERROR) - 1), 0) == -1) {
+		fputs("Error: failed to send a request.\n", stderr);
+		exit(1);
 	}
 }
 
 int main(void) {
-	Queue q = {0};
-	Arena a_get = {0};
-	Arena a_recv = {0};
-
 	int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-	if (unlikely(server_socket == -1)) {
-		fputs("Failed to create a socket!\n", stderr);
-		return -1;
+	if (server_socket == -1) {
+		fputs("Error: failed to create a socket.\n", stderr);
+		return 1;
 	}
 
-	struct sockaddr_in server_adress;
-	server_adress.sin_family = AF_INET;
-	server_adress.sin_port = htons(PORT);
-	server_adress.sin_addr.s_addr = INADDR_ANY;
+	struct sockaddr_in server_address;
+	server_address.sin_family = AF_INET;
+	server_address.sin_port = htons(PORT);
+	server_address.sin_addr.s_addr = INADDR_ANY;
 
-	if (unlikely(bind(server_socket, (struct sockaddr *)&server_adress, sizeof(server_adress)) == -1)) {
-		fputs("Failed to bind the socket!\n", stderr);
-		close(server_socket);
-		return -1;
+	if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) == -1) {
+		fputs("Error: failed to bind the socket.\n", stderr);
+		return 1;
 	}
 
-	if (unlikely(listen(server_socket, 10) < 0)) {
-		fputs("Failed to listen to socket!\n", stderr);
-		close(server_socket);
-		return -1;
+	if (listen(server_socket, 10) < 0) {
+		fputs("Error: failed to listen to socket.\n", stderr);
+		return 1;
 	}
 
-	arena_init(&a_get, &q);
-	arena_init(&a_recv, &q);
+	arena_init(&arena, &queue);
+	buf_filename = arena_alloc(&arena, &queue, 2 * PAGE_SIZE);
+	buf_recv = arena_alloc(&arena, &queue, PAGE_SIZE);
 
-	pthread_mutex_init(&q.mutex, NULL);
-	pthread_cond_init(&q.cond, NULL);
+	pthread_mutex_init(&queue.mutex, NULL);
+	pthread_cond_init(&queue.cond, NULL);
 
-	buf_get = arena_alloc(&a_get, &q, CAPACITY);
-	buf_recv = arena_alloc(&a_recv, &q, CAPACITY);
-
-	if (a_get.offset > CAPACITY - 1) {
-		arena_alloc(&a_get, &q, CAPACITY * 2);
-	}
-
-	if (a_recv.offset > CAPACITY - 1) {
-		arena_alloc(&a_recv, &q, CAPACITY * 2);
-	}
-
-	for (u8 i = 0; i < THREADS; ++i) {
-		pthread_create(&q.thread[i], NULL, worker, &q);
+	for (u16 i = 0; i < THREADS; ++i) {
+		pthread_create(&queue.thread[i], NULL, worker, &queue);
 	}
 
 	for (;;) {
 		int client_socket = accept(server_socket, NULL, NULL);
 		if (client_socket == -1) {
-			fputs("Failed to accept the request!\n", stderr);
+			fputs("Error: failed to accept a request.\n", stderr);
+			return 1;
 		}
 
-		int recv_func = recv(client_socket, buf_recv, CAPACITY - 1, 0);
+		ssize_t recv_func = recv(client_socket, buf_recv, PAGE_SIZE, 0);
 		if (recv_func == -1) {
-			fputs("Failed to receive a message from the socket!\n", stderr);
+			fputs("Error: failed to receive a message from the socket.\n", stderr);
+			return 1;
+		} else if (recv_func > PAGE_SIZE) {
+			buf_recv = arena_alloc(&arena, &queue, recv_func);
 		}
-
-		method = strtok_r(buf_recv, " ", &saveptr);
-		path = strtok_r(NULL, " ", &saveptr);
 
 		Task task;
 		task.client_socket = client_socket;
 
-		if ((strcmp(method, "GET") == 0) && (strncmp(path, "/files/", 7) == 0)) {
+		if ((strncmp(buf_recv, "GET", 3) == 0) && (strncmp(buf_recv + 4, "/files/", 7) == 0)) {
 			task.func = get;
-			enqueue(&q, task);
-		} else if ((strcmp(method, "POST") == 0) && (strncmp(path, "/files/", 7) == 0)) {
+			enqueue(&queue, task);
+		} else if ((strncmp(buf_recv, "POST", 4) == 0) && (strncmp(buf_recv + 5, "/files/", 7) == 0)) {
 			task.func = post;
-			enqueue(&q, task);
+			enqueue(&queue, task);
 		} else {
 			task.func = error;
-			task.client_socket = client_socket;
-			enqueue(&q, task);
+			enqueue(&queue, task);
 		}
 	}
-
-	for (u8 i = 0; i < THREADS; ++i) {
-		pthread_join(q.thread[i], NULL);
-	}
-
-	arena_free(&a_get, &q);
-	arena_free(&a_recv, &q);
-
-	pthread_mutex_destroy(&q.mutex);
-	pthread_cond_destroy(&q.cond);
-
-	close(server_socket);
 	return 0;
 }
