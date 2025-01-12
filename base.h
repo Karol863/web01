@@ -34,11 +34,4 @@ typedef struct {
 	u64 available;
 } Arena;
 
-void enqueue(Queue *q, Task t);
-Task dequeue(Queue *q);
-void *worker(void *arg);
-
-void arena_init(Arena *a, Queue *q);
-void *arena_alloc(Arena *a, Queue *q, u64 size);
-
 #endif

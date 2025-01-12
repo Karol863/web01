@@ -1,7 +1,7 @@
 #include <string.h>
 
-#include "pool.c"
 #include "arena.c"
+#include "pool.c"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -41,6 +41,7 @@ char *get_message(void) {
 	assert(message != NULL);
 	return message;
 } 
+
 void get(int client_socket) {
 	char *filename = get_filename();
 
@@ -61,7 +62,7 @@ void get(int client_socket) {
 	memcpy(buf_get, HTTP_HEADER_OK, sizeof(HTTP_HEADER_OK));
 
 	u64 read_size = fread(buf_get + sizeof(HTTP_HEADER_OK), 1, buf_get_len, f);
-	if (ferror(f) || read_size < 0) {
+	if (ferror(f) || read_size >= buf_get_len) {
 		fprintf(stderr, "Error: failed to read from the %s file.\n", buf_filename);
 		exit(1);
 	}
@@ -83,8 +84,8 @@ void post(int client_socket) {
 		exit(1);
 	}
 
-	u64 write_size = fwrite(message, 1, strlen(message), f);
-	if (ferror(f) || write_size < 0) {
+	fwrite(message, 1, strlen(message), f);
+	if (ferror(f)) {
 		fprintf(stderr, "Error: failed to write data into the %s file.\n", filename);
 		exit(1);
 	}
@@ -101,6 +102,18 @@ void error(int client_socket) {
 		fputs("Error: failed to send a request.\n", stderr);
 		exit(1);
 	}
+}
+
+void *worker(void *arg) {
+	Queue *q = arg;
+	Task t;
+
+	for (;;) {
+		t = dequeue(q);
+		t.func(t.client_socket);
+		close(t.client_socket);
+	}
+	arena_free(&arena, &queue);
 }
 
 int main(void) {
@@ -147,8 +160,11 @@ int main(void) {
 		if (recv_func == -1) {
 			fputs("Error: failed to receive a message from the socket.\n", stderr);
 			return 1;
+		} else if (recv_func < PAGE_SIZE) {
+			buf_recv[recv_func] = '\0';
 		} else if (recv_func > PAGE_SIZE) {
 			buf_recv = arena_alloc(&arena, &queue, recv_func);
+			buf_recv[recv_func] = '\0';
 		}
 
 		Task task;
@@ -165,5 +181,10 @@ int main(void) {
 			enqueue(&queue, task);
 		}
 	}
+
+	for (u16 i = 0; i < THREADS; ++i) {
+		pthread_join(queue.thread[i], NULL);
+	}
+
 	return 0;
 }

@@ -32,14 +32,3 @@ Task dequeue(Queue *q) {
 	pthread_mutex_unlock(&q->mutex);
 	return t;
 }
-
-void *worker(void *arg) {
-	Queue *q = arg;
-	Task t;
-
-	for (;;) {
-		t = dequeue(q);
-		t.func(t.client_socket);
-		close(t.client_socket);
-	}
-}

@@ -48,3 +48,14 @@ void *arena_alloc(Arena *a, Queue *q, u64 size) {
 	}
 	return NULL;
 }
+
+void arena_free(Arena *a, Queue *q) {
+	pthread_mutex_lock(&q->mutex);
+
+	if (mprotect(a->memory, a->commited, PROT_NONE) == -1) {
+		fputs("Error: failed to free the arena.\n", stderr);
+		exit(1);
+	}
+
+	pthread_mutex_unlock(&q->mutex);
+}
