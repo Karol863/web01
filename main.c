@@ -99,7 +99,7 @@ static void post(Arena *arena, int client_socket, char *buf_recv) {
 	}
 }
 
-static void error(Arena *arena, int client_socket, char *buf_recv) {
+static void error(int client_socket) {
 	if (send(client_socket, HTTP_HEADER_ERROR, sizeof(HTTP_HEADER_ERROR) - 1, 0) == -1) {
 		fputs("Error: Failed to send a request.\n", stderr);
 		exit(1);
@@ -108,36 +108,32 @@ static void error(Arena *arena, int client_socket, char *buf_recv) {
 
 static void *worker(void *arg) {
 	Queue *q = arg;
-	Arena arena = {0};
+	Arena arena;
 	arena_init(&arena);
 
 	for (;;) {
 		Task t = dequeue(q);
 
-		char *buf_recv = arena_alloc(&arena, PAGE_SIZE);
+		char buf_recv[PAGE_SIZE];
 		ssize_t recv_func = recv(t.client_socket, buf_recv, PAGE_SIZE - 1, 0);
 		if (recv_func == -1) {
 			fputs("Error: Failed to receive a message from the socket.\n", stderr);
-			exit(1);
-		} else if (recv_func < PAGE_SIZE - 1) {
-			buf_recv[recv_func] = '\0';
-		} else if (recv_func > PAGE_SIZE - 1) {
-			buf_recv = arena_alloc(&arena, recv_func - (PAGE_SIZE - 1));
-			buf_recv[recv_func] = '\0';
+			continue;
 		}
+		buf_recv[recv_func] = '\0';
 
 		if ((strncmp(buf_recv, "GET", 3) == 0) && (strncmp(buf_recv + 4, "/files/", 7) == 0)) {
-			t.func = get;
+			get(&arena, t.client_socket, buf_recv);
 		} else if ((strncmp(buf_recv, "POST", 4) == 0) && (strncmp(buf_recv + 5, "/files/", 7) == 0)) {
-			t.func = post;
+			post(&arena, t.client_socket, buf_recv);
 		} else {
-			t.func = error;
+			error(t.client_socket);
 		}
 
-		t.func(&arena, t.client_socket, buf_recv);
 		close(t.client_socket);
 		arena_free(&arena);
 	}
+	return NULL;
 }
 
 int main(void) {
@@ -181,10 +177,10 @@ int main(void) {
 		int client_socket = accept(server_socket, NULL, NULL);
 		if (client_socket == -1) {
 			fputs("Error: Failed to accept a request.\n", stderr);
-			return 1;
+			continue;
 		}
 
-		Task task = {0};
+		Task task;
 		task.client_socket = client_socket;
 		enqueue(&queue, task);
 	}
@@ -194,6 +190,5 @@ int main(void) {
 	}
 
 	close(server_socket);
-
 	return 0;
 }

@@ -20,7 +20,6 @@ typedef struct {
 } Arena;
 
 typedef struct {
-	void (*func) (Arena *, int, char *);
 	int client_socket;
 } Task;
 
