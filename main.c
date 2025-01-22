@@ -114,31 +114,27 @@ static void *worker(void *arg) {
 	for (;;) {
 		Task t = dequeue(q);
 
-		t.buf_recv = arena_alloc(&arena, PAGE_SIZE);
-		ssize_t recv_func = recv(t.client_socket, t.buf_recv, PAGE_SIZE - 1, 0);
+		char *buf_recv = arena_alloc(&arena, PAGE_SIZE);
+		ssize_t recv_func = recv(t.client_socket, buf_recv, PAGE_SIZE - 1, 0);
 		if (recv_func == -1) {
 			fputs("Error: Failed to receive a message from the socket.\n", stderr);
 			exit(1);
 		} else if (recv_func < PAGE_SIZE - 1) {
-			t.buf_recv[recv_func] = '\0';
+			buf_recv[recv_func] = '\0';
 		} else if (recv_func > PAGE_SIZE - 1) {
-			t.buf_recv = arena_alloc(&arena, recv_func - (PAGE_SIZE - 1));
-			t.buf_recv[recv_func] = '\0';
+			buf_recv = arena_alloc(&arena, recv_func - (PAGE_SIZE - 1));
+			buf_recv[recv_func] = '\0';
 		}
 
-		if ((strncmp(t.buf_recv, "GET", 3) == 0) && (strncmp(t.buf_recv + 4, "/files/", 7) == 0)) {
-			t.arena = &arena;
+		if ((strncmp(buf_recv, "GET", 3) == 0) && (strncmp(buf_recv + 4, "/files/", 7) == 0)) {
 			t.func = get;
-		} else if ((strncmp(t.buf_recv, "POST", 4) == 0) && (strncmp(t.buf_recv + 5, "/files/", 7) == 0)) {
-			t.arena = &arena;
+		} else if ((strncmp(buf_recv, "POST", 4) == 0) && (strncmp(buf_recv + 5, "/files/", 7) == 0)) {
 			t.func = post;
 		} else {
-			t.arena = NULL;
-			t.buf_recv = NULL;
 			t.func = error;
 		}
 
-		t.func(t.arena, t.client_socket, t.buf_recv);
+		t.func(&arena, t.client_socket, buf_recv);
 		close(t.client_socket);
 		arena_free(&arena);
 	}

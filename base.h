@@ -21,9 +21,7 @@ typedef struct {
 
 typedef struct {
 	void (*func) (Arena *, int, char *);
-	Arena *arena;
 	int client_socket;
-	char *buf_recv;
 } Task;
 
 typedef struct {

@@ -41,10 +41,5 @@ void *arena_alloc(Arena *a, usize size) {
 }
 
 void arena_free(Arena *a) {
-	if (mprotect(a->memory, a->commited, PROT_NONE) == -1) {
-		fputs("Error: Failed to free the arena.\n", stderr);
-		exit(1);
-	}
 	a->offset = 0;
-	a->commited = 0;
 }
