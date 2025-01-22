@@ -8,7 +8,7 @@ void enqueue(Queue *q, Task t) {
 	pthread_mutex_lock(&q->mutex);
 
 	if ((q->tail + 1) % QUEUE == q->head) {
-		fputs("Error: queue is full.\n", stderr);
+		fputs("Error: Queue is full.\n", stderr);
 		exit(1);
 	}
 
